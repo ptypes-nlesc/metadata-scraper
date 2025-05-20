@@ -6,7 +6,7 @@ headers = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
 }
 
-def get_upload_date_from_script(url):
+def get_upload_date(url):
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
