@@ -28,53 +28,64 @@ def parse_view_count(text):
     except:
         return None
 
-async def get_data(session, url):
-    try:
-        async with session.get(url, timeout=10) as resp:
-            if resp.status != 200:
+async def get_data(session, url, retries=3):
+    for attempt in range(retries):
+        try:
+            async with session.get(url, timeout=20) as resp:
+                if resp.status != 200:
+                    raise aiohttp.ClientResponseError(
+                        status=resp.status,
+                        message=f"HTTP {resp.status}",
+                        request_info=resp.request_info,
+                        history=resp.history
+                    )
+
+                html = await resp.text()
+                soup = BeautifulSoup(html, "html.parser")
+
+                # Date
+                date_match = re.search(r"'video_date_published'\s*:\s*'(\d{8})'", html)
+                upload_date = datetime.strptime(date_match.group(1), "%Y%m%d").date() if date_match else None
+
+                # Votes up
+                votes_up = None
+                votes_span = soup.find("span", class_="votesUp")
+                if votes_span and votes_span.has_attr("data-rating"):
+                    votes_up = int(votes_span["data-rating"])
+
+                # Views
+                views = None
+                views_div = soup.find("div", class_="views")
+                if views_div:
+                    count_span = views_div.find("span", class_="count")
+                    if count_span:
+                        views = parse_view_count(count_span.text.strip())
+
+                # Categories
+                categories = []
+                wrapper = soup.find("div", class_="categoriesWrapper")
+                if wrapper:
+                    categories = [a.get_text(strip=True) for a in wrapper.find_all("a", class_="item")]
+
+                # Tags
+                tags = []
+                meta = soup.find("meta", attrs={"name": "adsbytrafficjunkycontext"})
+                if meta and meta.has_attr("data-context-tag"):
+                    tags = [t.strip() for t in meta["data-context-tag"].split(",")]
+
+                return url, upload_date, votes_up, views, categories, tags
+
+        except Exception as e:
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)  # exponential backoff
+            else:
+                error_message = f"{url} | {type(e).__name__}: {e}"
+                print(f"Failed: {error_message}")
+                async with asyncio.Lock():
+                    with open("failed_urls.log", "a", encoding="utf-8") as f:
+                        f.write(error_message + "\n")
                 return url, None, None, None, None, None
 
-            html = await resp.text()
-            soup = BeautifulSoup(html, "html.parser")
-
-            # Date
-            date_match = re.search(r"'video_date_published'\s*:\s*'(\d{8})'", html)
-            upload_date = datetime.strptime(date_match.group(1), "%Y%m%d").date() if date_match else None
-
-            # Votes up
-            votes_up = None
-            votes_span = soup.find("span", class_="votesUp")
-            if votes_span and votes_span.has_attr("data-rating"):
-                votes_up = int(votes_span["data-rating"])
-
-            # Views
-            views = None
-            views_div = soup.find("div", class_="views")
-            if views_div:
-                count_span = views_div.find("span", class_="count")
-                if count_span:
-                    views = parse_view_count(count_span.text.strip())
-
-            # Categories
-            categories = []
-            wrapper = soup.find("div", class_="categoriesWrapper")
-            if wrapper:
-                categories = [a.get_text(strip=True) for a in wrapper.find_all("a", class_="item")]
-
-            # Tags
-            tags = []
-            meta = soup.find("meta", attrs={"name": "adsbytrafficjunkycontext"})
-            if meta and meta.has_attr("data-context-tag"):
-                tags = [t.strip() for t in meta["data-context-tag"].split(",")]
-
-            return url, upload_date, votes_up, views, categories, tags
-    except Exception as e:
-        error_message = f"{url} | {type(e).__name__}: {e}"
-        print(f"Failed: {error_message}")
-        async with asyncio.Lock():  # prevent race conditions when writing in parallel
-            with open("failed_urls.log", "a", encoding="utf-8") as f:
-                f.write(error_message + "\n")
-        return url, None, None, None, None, None
 
 
 
