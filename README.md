@@ -4,6 +4,7 @@ It is developed for academic NLP and social computing research.
 Steps:
 1. Loads a CSV file (data.csv) with video URLs (delimited by ‽).
 2. For each video URL, it retrieves:
+  - Title
   - Upload date
   - Vote count (upvotes)
   - View count
