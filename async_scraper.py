@@ -78,7 +78,11 @@ async def get_data(session, url, retries=RETRIES):
                 if meta and meta.has_attr("data-context-tag"):
                     tags = [t.strip() for t in meta["data-context-tag"].split(",")]
 
-                return url, upload_date, votes_up, views, categories, tags
+                # Title
+                title_tag = soup.find("meta", attrs={"property": "og:title"})
+                video_title = title_tag["content"].replace(" - Pornhub.com", "").strip() if title_tag else None
+
+                return url, upload_date, votes_up, views, categories, tags, video_title
 
         except Exception as e:
             if attempt < retries - 1:
@@ -89,7 +93,7 @@ async def get_data(session, url, retries=RETRIES):
                 async with asyncio.Lock():
                     with open("failed_urls.log", "a", encoding="utf-8") as f:
                         f.write(error_message + "\n")
-                return url, None, None, None, None, None
+                return url, None, None, None, None, None, None
 
 
 async def run_scraper(urls, output_path):
@@ -105,7 +109,9 @@ async def run_scraper(urls, output_path):
                 result = await f
                 results.append(result)
 
-            batch_df = pd.DataFrame(results, columns=["url", "_upload_date", "_votes_up", "_views", "_categories", "_tags"])
+            batch_df = pd.DataFrame(results, columns=[
+                "url", "_upload_date", "_votes_up", "_views", "_categories", "_tags", "_title"
+            ])
             batch_df["_categories"] = batch_df["_categories"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
             batch_df["_tags"] = batch_df["_tags"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
 
@@ -137,7 +143,7 @@ def get_failed_urls():
         return []
 
     df = pd.read_csv(OUTPUT_PATH)
-    failed_df = df[df[["_upload_date", "_votes_up", "_views", "_categories", "_tags"]].isnull().all(axis=1)]
+    failed_df = df[df[["_upload_date", "_votes_up", "_views", "_categories", "_tags", "_title"]].isnull().all(axis=1)]
     print(f"Found {len(failed_df)} rows with missing metadata.")
     return failed_df["url"].dropna().tolist()
 
