@@ -1,18 +1,22 @@
+import os
+import re
+import random
 import asyncio
 import aiohttp
 import pandas as pd
-import re
 from bs4 import BeautifulSoup
 from datetime import datetime
 from tqdm.asyncio import tqdm
-import random
 
+# CONFIG
+INPUT_PATH = "data.csv"
+OUTPUT_PATH = "output_async.csv"
+CONCURRENCY = 30
+CHUNK_SIZE = 100
+RETRIES = 3
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
 }
-
-CONCURRENCY = 30  
-CHUNK_SIZE = 100 
 
 
 def parse_view_count(text):
@@ -28,7 +32,8 @@ def parse_view_count(text):
     except:
         return None
 
-async def get_data(session, url, retries=3):
+
+async def get_data(session, url, retries=RETRIES):
     for attempt in range(retries):
         try:
             async with session.get(url, timeout=20) as resp:
@@ -43,7 +48,7 @@ async def get_data(session, url, retries=3):
                 html = await resp.text()
                 soup = BeautifulSoup(html, "html.parser")
 
-                # Date
+                # Upload date
                 date_match = re.search(r"'video_date_published'\s*:\s*'(\d{8})'", html)
                 upload_date = datetime.strptime(date_match.group(1), "%Y%m%d").date() if date_match else None
 
@@ -77,7 +82,7 @@ async def get_data(session, url, retries=3):
 
         except Exception as e:
             if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)  # exponential backoff
+                await asyncio.sleep(2 ** attempt)
             else:
                 error_message = f"{url} | {type(e).__name__}: {e}"
                 print(f"Failed: {error_message}")
@@ -87,43 +92,79 @@ async def get_data(session, url, retries=3):
                 return url, None, None, None, None, None
 
 
-
-
-async def run_scraper(urls):
-    results = []
+async def run_scraper(urls, output_path):
     connector = aiohttp.TCPConnector(limit_per_host=CONCURRENCY)
-
     async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
         for i in range(0, len(urls), CHUNK_SIZE):
-            batch = urls[i:i+CHUNK_SIZE]
+            batch = urls[i:i + CHUNK_SIZE]
+            print(f"\n▶ Processing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
+
             tasks = [get_data(session, url) for url in batch]
-            for f in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=f"Batch {i//CHUNK_SIZE+1}"):
+            results = []
+            for f in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=f"Batch {i // CHUNK_SIZE + 1}"):
                 result = await f
                 results.append(result)
+
+            batch_df = pd.DataFrame(results, columns=["url", "_upload_date", "_votes_up", "_views", "_categories", "_tags"])
+            batch_df["_categories"] = batch_df["_categories"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
+            batch_df["_tags"] = batch_df["_tags"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
+
+            write_header = not os.path.exists(output_path)
+            batch_df.to_csv(output_path, mode="a", header=write_header, index=False)
+            print(f"Appended {len(batch_df)} rows to {output_path}")
+
             await asyncio.sleep(random.uniform(0.8, 2.0))
 
-    return results
+
+def get_unprocessed_urls():
+    df = pd.read_csv(INPUT_PATH, delimiter='‽', encoding='utf-8', engine='python')
+    all_urls = set(df["url"].dropna())
+
+    if os.path.exists(OUTPUT_PATH):
+        existing = pd.read_csv(OUTPUT_PATH)
+        done_urls = set(existing["url"].dropna())
+        print(f"🔎 Found {len(done_urls)} already processed URLs.")
+    else:
+        done_urls = set()
+
+    remaining = list(all_urls - done_urls)
+    print(f"{len(remaining)} URLs left to process.")
+    return remaining
+
+
+def get_failed_urls():
+    if not os.path.exists(OUTPUT_PATH):
+        return []
+
+    df = pd.read_csv(OUTPUT_PATH)
+    failed_df = df[df[["_upload_date", "_votes_up", "_views", "_categories", "_tags"]].isnull().all(axis=1)]
+    print(f"Found {len(failed_df)} rows with missing metadata.")
+    return failed_df["url"].dropna().tolist()
 
 
 def main():
-    df = pd.read_csv("data.csv", delimiter='‽', encoding='utf-8', engine='python')
-    df = df.head(500)  
+    # Step 1: Process remaining new URLs
+    new_urls = get_unprocessed_urls()
+    if new_urls:
+        asyncio.run(run_scraper(new_urls, OUTPUT_PATH))
 
-    urls = df["url"].tolist()
-    results = asyncio.run(run_scraper(urls))
+    # Step 2: Retry failed rows
+    retry_urls = get_failed_urls()
+    if retry_urls:
+        print("Retrying failed metadata fetches...")
+        temp_retry_path = "retry_temp.csv"
+        asyncio.run(run_scraper(retry_urls, temp_retry_path))
 
-    # Unpack results
-    result_df = pd.DataFrame(results, columns=["url", "upload_date", "votes_up", "views", "categories", "tags"])
+        # Merge retry file into final output
+        df_existing = pd.read_csv(OUTPUT_PATH).set_index("url")
+        df_retry = pd.read_csv(temp_retry_path).set_index("url")
+        df_merged = df_retry.combine_first(df_existing).reset_index()
+        df_merged.to_csv(OUTPUT_PATH, index=False)
+        os.remove(temp_retry_path)
+        print("Retried data merged into output.")
 
-    # Merge with original
-    df = df.merge(result_df, on="url", how="left")
+    print("Scraping complete.")
 
-    # Serialize list columns
-    df["categories"] = df["categories"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
-    df["tags"] = df["tags"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
-
-    df.to_csv("output_async.csv", index=False)
-    print("Saved: output_async.csv")
 
 if __name__ == "__main__":
     main()
