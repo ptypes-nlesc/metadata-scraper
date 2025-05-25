@@ -1,7 +1,4 @@
-This tool:
+This asynchronous web scraper is designed to extract metadata from public Pornhub video pages.
+It is developed for academic NLP and social computing research
 
-- Scrapes metadata from public Pornhub video pages
-- Designed for academic NLP and social computing research
-- Chunked execution with progress bar (tqdm)
-- Server-friendly delays and polite scraping
-- CSV input/output with reproducible pipeline
+
