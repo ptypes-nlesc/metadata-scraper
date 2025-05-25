@@ -7,6 +7,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime
 from tqdm.asyncio import tqdm
+from playwright.async_api import async_playwright
 
 # CONFIG
 INPUT_PATH = "data.csv"
@@ -33,6 +34,51 @@ def parse_view_count(text):
         return None
 
 
+async def get_data_playwright(url):
+    try:
+        async with async_playwright() as p:
+            browser = await p.firefox.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=30000)
+
+            html = await page.content()
+            soup = BeautifulSoup(html, "html.parser")
+
+            title = soup.title.string.strip() if soup.title else None
+
+            date_match = re.search(r"'video_date_published'\s*:\s*'(\d{8})'", html)
+            upload_date = datetime.strptime(date_match.group(1), "%Y%m%d").date() if date_match else None
+
+            votes_up = None
+            span = soup.find("span", class_="votesUp")
+            if span and span.has_attr("data-rating"):
+                votes_up = int(span["data-rating"])
+
+            views = None
+            views_div = soup.find("div", class_="views")
+            if views_div:
+                count_span = views_div.find("span", class_="count")
+                if count_span:
+                    views = parse_view_count(count_span.text.strip())
+
+            categories = []
+            wrapper = soup.find("div", class_="categoriesWrapper")
+            if wrapper:
+                categories = [a.get_text(strip=True) for a in wrapper.find_all("a", class_="item")]
+
+            tags = []
+            meta = soup.find("meta", attrs={"name": "adsbytrafficjunkycontext"})
+            if meta and meta.has_attr("data-context-tag"):
+                tags = [t.strip() for t in meta["data-context-tag"].split(",")]
+
+            await browser.close()
+            return url, title, upload_date, votes_up, views, categories, tags
+
+    except Exception as e:
+        print(f"[Playwright Failed] {url} | {e}")
+        return url, None, None, None, None, None, None
+
+
 async def get_data(session, url, retries=RETRIES):
     for attempt in range(retries):
         try:
@@ -48,17 +94,16 @@ async def get_data(session, url, retries=RETRIES):
                 html = await resp.text()
                 soup = BeautifulSoup(html, "html.parser")
 
-                # Upload date
+                title = soup.title.string.strip() if soup.title else None
+
                 date_match = re.search(r"'video_date_published'\s*:\s*'(\d{8})'", html)
                 upload_date = datetime.strptime(date_match.group(1), "%Y%m%d").date() if date_match else None
 
-                # Votes up
                 votes_up = None
                 votes_span = soup.find("span", class_="votesUp")
                 if votes_span and votes_span.has_attr("data-rating"):
                     votes_up = int(votes_span["data-rating"])
 
-                # Views
                 views = None
                 views_div = soup.find("div", class_="views")
                 if views_div:
@@ -66,30 +111,24 @@ async def get_data(session, url, retries=RETRIES):
                     if count_span:
                         views = parse_view_count(count_span.text.strip())
 
-                # Categories
                 categories = []
                 wrapper = soup.find("div", class_="categoriesWrapper")
                 if wrapper:
                     categories = [a.get_text(strip=True) for a in wrapper.find_all("a", class_="item")]
 
-                # Tags
                 tags = []
                 meta = soup.find("meta", attrs={"name": "adsbytrafficjunkycontext"})
                 if meta and meta.has_attr("data-context-tag"):
                     tags = [t.strip() for t in meta["data-context-tag"].split(",")]
 
-                return url, upload_date, votes_up, views, categories, tags
+                return url, title, upload_date, votes_up, views, categories, tags
 
         except Exception as e:
             if attempt < retries - 1:
                 await asyncio.sleep(2 ** attempt)
             else:
-                error_message = f"{url} | {type(e).__name__}: {e}"
-                print(f"Failed: {error_message}")
-                async with asyncio.Lock():
-                    with open("failed_urls.log", "a", encoding="utf-8") as f:
-                        f.write(error_message + "\n")
-                return url, None, None, None, None, None
+                print(f"[aiohttp Failed] Falling back to Playwright: {url}")
+                return await get_data_playwright(url)
 
 
 async def run_scraper(urls, output_path):
@@ -105,7 +144,8 @@ async def run_scraper(urls, output_path):
                 result = await f
                 results.append(result)
 
-            batch_df = pd.DataFrame(results, columns=["url", "_upload_date", "_votes_up", "_views", "_categories", "_tags"])
+            batch_df = pd.DataFrame(results, columns=[
+                "url", "_title", "_upload_date", "_votes_up", "_views", "_categories", "_tags"])
             batch_df["_categories"] = batch_df["_categories"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
             batch_df["_tags"] = batch_df["_tags"].apply(lambda x: ";".join(x) if isinstance(x, list) else "")
 
@@ -132,38 +172,12 @@ def get_unprocessed_urls():
     return remaining
 
 
-def get_failed_urls():
-    if not os.path.exists(OUTPUT_PATH):
-        return []
-
-    df = pd.read_csv(OUTPUT_PATH)
-    failed_df = df[df[["_upload_date", "_votes_up", "_views", "_categories", "_tags"]].isnull().all(axis=1)]
-    print(f"Found {len(failed_df)} rows with missing metadata.")
-    return failed_df["url"].dropna().tolist()
-
-
 def main():
-    # Step 1: Process remaining new URLs
-    new_urls = get_unprocessed_urls()
-    if new_urls:
-        asyncio.run(run_scraper(new_urls, OUTPUT_PATH))
-
-    # Step 2: Retry failed rows
-    retry_urls = get_failed_urls()
-    if retry_urls:
-        print("Retrying failed metadata fetches...")
-        temp_retry_path = "retry_temp.csv"
-        asyncio.run(run_scraper(retry_urls, temp_retry_path))
-
-        # Merge retry file into final output
-        df_existing = pd.read_csv(OUTPUT_PATH).set_index("url")
-        df_retry = pd.read_csv(temp_retry_path).set_index("url")
-        df_merged = df_retry.combine_first(df_existing).reset_index()
-        df_merged.to_csv(OUTPUT_PATH, index=False)
-        os.remove(temp_retry_path)
-        print("Retried data merged into output.")
-
-    print("Scraping complete.")
+    urls = get_unprocessed_urls()
+    if urls:
+        asyncio.run(run_scraper(urls, OUTPUT_PATH))
+    else:
+        print("✅ All URLs already processed.")
 
 
 if __name__ == "__main__":
