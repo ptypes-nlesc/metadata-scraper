@@ -136,7 +136,7 @@ async def run_scraper(urls, output_path):
     async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
         for i in range(0, len(urls), CHUNK_SIZE):
             batch = urls[i:i + CHUNK_SIZE]
-            print(f"\n▶ Processing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
+            print(f"\n Processing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
 
             tasks = [get_data(session, url) for url in batch]
             results = []
@@ -163,7 +163,7 @@ def get_unprocessed_urls():
     if os.path.exists(OUTPUT_PATH):
         existing = pd.read_csv(OUTPUT_PATH)
         done_urls = set(existing["url"].dropna())
-        print(f"🔎 Found {len(done_urls)} already processed URLs.")
+        print(f"Found {len(done_urls)} already processed URLs.")
     else:
         done_urls = set()
 
@@ -177,7 +177,7 @@ def main():
     if urls:
         asyncio.run(run_scraper(urls, OUTPUT_PATH))
     else:
-        print("✅ All URLs already processed.")
+        print("All URLs already processed.")
 
 
 if __name__ == "__main__":
