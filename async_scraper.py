@@ -59,7 +59,7 @@ def parse_html(html, url):
     if wrapper:
         categories = [a.get_text(strip=True) for a in wrapper.find_all("a", class_="item")]
 
-    # Tags
+    # Tagss
     tags = []
     meta = soup.find("meta", attrs={"name": "adsbytrafficjunkycontext"})
     if meta and meta.has_attr("data-context-tag"):
