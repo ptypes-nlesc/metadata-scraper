@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from tqdm.asyncio import tqdm
 from playwright.async_api import async_playwright  # <- Playwright fallback
+import rotate_vpn
 
 # CONFIG
 INPUT_PATH = "data.csv"
@@ -114,7 +115,7 @@ async def run_scraper(urls, output_path):
     async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
         for i in range(0, len(urls), CHUNK_SIZE):
             batch = urls[i:i + CHUNK_SIZE]
-            print(f"\n▶ Processing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
+            print(f"\nProcessing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
 
             tasks = [get_data(session, url) for url in batch]
             results = []
@@ -130,9 +131,13 @@ async def run_scraper(urls, output_path):
 
             write_header = not os.path.exists(output_path)
             batch_df.to_csv(output_path, mode="a", header=write_header, index=False)
-            print(f"✔ Appended {len(batch_df)} rows to {output_path}")
+            print(f"Appended {len(batch_df)} rows to {output_path}")
 
-            await asyncio.sleep(random.uniform(0.8, 2.0))
+            # Rotate VPN after each batch
+            rotate_vpn.rotate_vpn()
+
+            # Optional: wait a bit to ensure IP fully rotates
+            await asyncio.sleep(random.uniform(2.0, 4.0))
 
 def get_unprocessed_urls():
     df = pd.read_csv(INPUT_PATH, delimiter='‽', encoding='utf-8', engine='python')
