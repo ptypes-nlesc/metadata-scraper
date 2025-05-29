@@ -9,6 +9,7 @@ from datetime import datetime
 from tqdm.asyncio import tqdm
 from playwright.async_api import async_playwright  # <- Playwright fallback
 import rotate_vpn
+import subprocess
 
 # CONFIG
 INPUT_PATH = "data.csv"
@@ -17,8 +18,14 @@ CONCURRENCY = 30
 CHUNK_SIZE = 100
 RETRIES = 3
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Connection": "keep-alive",
 }
+
+ROTATE_EVERY = 10
 
 def parse_view_count(text):
     try:
@@ -115,7 +122,9 @@ async def run_scraper(urls, output_path):
     async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
         for i in range(0, len(urls), CHUNK_SIZE):
             batch = urls[i:i + CHUNK_SIZE]
-            print(f"\nProcessing batch {i // CHUNK_SIZE + 1} of {len(urls) // CHUNK_SIZE + 1}")
+            batch_num = i // CHUNK_SIZE + 1
+
+            print(f"\nProcessing batch {batch_num} of {len(urls) // CHUNK_SIZE + 1}")
 
             tasks = [get_data(session, url) for url in batch]
             results = []
@@ -133,11 +142,11 @@ async def run_scraper(urls, output_path):
             batch_df.to_csv(output_path, mode="a", header=write_header, index=False)
             print(f"Appended {len(batch_df)} rows to {output_path}")
 
-            # Rotate VPN after each batch
-            rotate_vpn.rotate_vpn()
+            if batch_num % ROTATE_EVERY == 0:
+                print("🔁 Rotating VPN...")
+                subprocess.run(["./rotate_vpn.sh"])
+                await asyncio.sleep(random.uniform(3.0, 5.0))  # give time for new IP to settle
 
-            # Optional: wait a bit to ensure IP fully rotates
-            await asyncio.sleep(random.uniform(2.0, 4.0))
 
 def get_unprocessed_urls():
     df = pd.read_csv(INPUT_PATH, delimiter='‽', encoding='utf-8', engine='python')
